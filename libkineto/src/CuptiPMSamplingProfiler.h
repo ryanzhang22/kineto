@@ -38,7 +38,6 @@ class CuptiPMSamplingSession final : public libkineto::IActivityProfilerSession 
   [[nodiscard]] std::unique_ptr<libkineto::CpuTraceBuffer> getTraceBuffer() override;
 
  private:
-  [[nodiscard]] int64_t toTraceTimestamp(uint64_t timestamp) const;
   [[nodiscard]] std::unique_ptr<libkineto::CpuTraceBuffer> buildTraceBuffer();
 
   int32_t deviceId_;

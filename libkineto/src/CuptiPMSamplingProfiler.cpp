@@ -14,8 +14,7 @@
 #include <utility>
 
 #include "ActivityType.h"
-#include "ApproximateClock.h"
-#include "CuptiActivity.h"
+#include "CuptiTimestamp.h"
 #include "Logger.h"
 #include "libkineto.h"
 
@@ -35,6 +34,11 @@ CuptiPMSamplingSession::CuptiPMSamplingSession(CuptiPMSamplingConfig config)
 CuptiPMSamplingSession::~CuptiPMSamplingSession() = default;
 
 bool CuptiPMSamplingSession::prepare() {
+  if (!isCuptiTimestampSourceReady()) {
+    LOG(WARNING) << "CUPTI PM sampling requires timestamp setup from the "
+                    "CUPTI Activity profiler";
+    return false;
+  }
   return controller_.prepare();
 }
 
@@ -82,18 +86,6 @@ std::unique_ptr<libkineto::CpuTraceBuffer> CuptiPMSamplingSession::
   return std::move(traceBuffer_);
 }
 
-int64_t CuptiPMSamplingSession::toTraceTimestamp(uint64_t timestamp) const {
-#ifdef _WIN32
-  return static_cast<int64_t>(timestamp);
-#else
-  // The parent activity profiler installs getApproximateTime() as CUPTI's
-  // timestamp provider when TSC timestamps are enabled. Convert PM sample
-  // boundaries exactly like CUPTI activity records.
-  return use_cupti_tsc() ? get_time_converter()(timestamp)
-                         : static_cast<int64_t>(timestamp);
-#endif
-}
-
 std::unique_ptr<libkineto::CpuTraceBuffer> CuptiPMSamplingSession::
     buildTraceBuffer() {
   auto buffer = std::make_unique<libkineto::CpuTraceBuffer>();
@@ -103,8 +95,8 @@ std::unique_ptr<libkineto::CpuTraceBuffer> CuptiPMSamplingSession::
   const auto& metricNames = controller_.metricNames();
   bool hasActivities = false;
   for (const auto& sample : samples) {
-    const auto start = toTraceTimestamp(sample.rawStartTimestamp);
-    const auto end = toTraceTimestamp(sample.rawEndTimestamp);
+    const auto start = convertCuptiTimestamp(sample.rawStartTimestamp);
+    const auto end = convertCuptiTimestamp(sample.rawEndTimestamp);
 
     if (!hasActivities) {
       buffer->span.startTime = start;
