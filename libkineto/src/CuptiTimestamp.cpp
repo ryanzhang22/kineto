@@ -11,6 +11,7 @@
 #include <chrono>
 
 #include "DeviceUtil.h"
+#include "Logger.h"
 
 namespace KINETO_NAMESPACE {
 namespace {
