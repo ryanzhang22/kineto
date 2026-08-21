@@ -93,6 +93,33 @@ constexpr uint64_t kGa100SamplingIntervalCycles = 1'000'000;
 
 } // namespace
 
+CUpti_PmSampling_SetConfig_Params detail::makeCuptiPMSamplingSetConfigParams(
+    int major,
+    int minor,
+    std::chrono::nanoseconds samplingInterval) {
+  CUpti_PmSampling_SetConfig_Params params{
+      CUpti_PmSampling_SetConfig_Params_STRUCT_SIZE};
+  // GPU_TIME_INTERVAL is unavailable on GA100. The wall-time duration of this
+  // fixed SYSCLK interval varies with the GPU's clock frequency.
+  if (major == 8 && minor == 0) {
+    params.triggerMode = CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_SYSCLK_INTERVAL;
+    params.samplingInterval = kGa100SamplingIntervalCycles;
+  } else if (major > 8 || (major == 8 && minor >= 6)) {
+    if (samplingInterval.count() <= 0) {
+      KINETO_THROW(
+          std::runtime_error, "CUPTI PM sampling interval must be positive");
+    }
+    params.triggerMode = CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_TIME_INTERVAL;
+    params.samplingInterval = static_cast<uint64_t>(samplingInterval.count());
+  } else {
+    KINETO_THROW(
+        std::runtime_error,
+        "Minimum supported GPU for CUPTI PM sampling is GA100 (compute "
+        "capability 8.0); other GPUs require compute capability 8.6 or newer");
+  }
+  return params;
+}
+
 CuptiPMSamplingApi::~CuptiPMSamplingApi() {
   disable();
   if (samplingObject_ != nullptr || hostObject_ != nullptr ||
@@ -161,28 +188,11 @@ void CuptiPMSamplingApi::configureCupti() {
         std::string{"cudaGetDeviceProperties failed: "} +
             cudaGetErrorString(cudaStatus));
   }
-  CUpti_PmSampling_TriggerMode triggerMode;
-  uint64_t samplingInterval;
-  // GPU_TIME_INTERVAL is unavailable on GA100. The wall-time duration of this
-  // fixed SYSCLK interval varies with the GPU's clock frequency.
-  if (deviceProperties.major == 8 && deviceProperties.minor == 0) {
-    triggerMode = CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_SYSCLK_INTERVAL;
-    samplingInterval = kGa100SamplingIntervalCycles;
-  } else if (
-      deviceProperties.major > 8 ||
-      (deviceProperties.major == 8 && deviceProperties.minor >= 6)) {
-    if (config_.samplingInterval.count() <= 0) {
-      KINETO_THROW(
-          std::runtime_error, "CUPTI PM sampling interval must be positive");
-    }
-    triggerMode = CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_TIME_INTERVAL;
-    samplingInterval = static_cast<uint64_t>(config_.samplingInterval.count());
-  } else {
-    KINETO_THROW(
-        std::runtime_error,
-        "Minimum supported GPU for CUPTI PM sampling is GA100 (compute "
-        "capability 8.0); other GPUs require compute capability 8.6 or newer");
-  }
+  CUpti_PmSampling_SetConfig_Params setConfig =
+      detail::makeCuptiPMSamplingSetConfigParams(
+          deviceProperties.major,
+          deviceProperties.minor,
+          config_.samplingInterval);
 
   // Building the availability image. This is a CUPTI byte buffer describing
   // which raw hardware counters are available on this machine. The first call
@@ -260,14 +270,10 @@ void CuptiPMSamplingApi::configureCupti() {
   CUPTI_CALL_THROW(cuptiPmSamplingEnable(&enable));
   samplingObject_ = enable.pPmSamplingObject;
 
-  CUpti_PmSampling_SetConfig_Params setConfig{
-      CUpti_PmSampling_SetConfig_Params_STRUCT_SIZE};
   setConfig.pPmSamplingObject = samplingObject_;
   setConfig.configSize = configImage_.size();
   setConfig.pConfig = configImage_.data();
   setConfig.hardwareBufferSize = kHardwareBufferSizeBytes;
-  setConfig.samplingInterval = samplingInterval;
-  setConfig.triggerMode = triggerMode;
   setConfig.hwBufferAppendMode =
       CUPTI_PM_SAMPLING_HARDWARE_BUFFER_APPEND_MODE_KEEP_LATEST;
   CUPTI_CALL_THROW(cuptiPmSamplingSetConfig(&setConfig));

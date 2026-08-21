@@ -15,6 +15,7 @@
 #include <vector>
 
 struct CUpti_PmSampling_Object;
+struct CUpti_PmSampling_SetConfig_Params;
 struct CUpti_Profiler_Host_Object;
 
 namespace KINETO_NAMESPACE {
@@ -32,6 +33,15 @@ struct CuptiPMSamplingConfig {
   std::vector<std::string> metricNames;
   std::chrono::nanoseconds samplingInterval{0};
 };
+
+namespace detail {
+
+[[nodiscard]] CUpti_PmSampling_SetConfig_Params makeCuptiPMSamplingSetConfigParams(
+    int major,
+    int minor,
+    std::chrono::nanoseconds samplingInterval);
+
+} // namespace detail
 
 class CuptiPMSamplingApi {
  public:
