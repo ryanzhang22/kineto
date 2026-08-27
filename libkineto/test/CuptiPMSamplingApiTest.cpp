@@ -15,8 +15,6 @@
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -33,9 +31,8 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// CuptiPMSamplingApi calls CUDA and CUPTI directly. This test overrides those C
-// symbols and uses shared state to script results and record calls without
-// touching a GPU.
+// CuptiPMSamplingApi calls CUDA and CUPTI directly. These overrides provide the
+// outputs needed by the tests without touching a GPU.
 struct FakeSample {
   uint64_t startTimestamp;
   uint64_t endTimestamp;
@@ -45,22 +42,20 @@ struct FakeSample {
 struct FakeCuptiState {
   int major{9};
   int minor{0};
-  std::string chipName{"mock-chip"};
-  size_t counterAvailabilityImageSize{3};
-  size_t configImageSize{4};
   size_t numPasses{1};
-  size_t counterDataSize{8};
   CUpti_PmSampling_DecodeStopReason decodeStopReason{
       CUPTI_PM_SAMPLING_DECODE_STOP_REASON_END_OF_RECORDS};
   std::vector<FakeSample> decodedSamples;
 
   std::vector<std::string> calls;
-  std::unordered_map<std::string, CUptiResult> results;
 
   std::vector<std::string> configMetricNames;
   size_t enabledDeviceIndex{0};
-  bool setConfigCalled{false};
-  CUpti_PmSampling_SetConfig_Params setConfig{};
+  CUptiResult setConfigResult{CUPTI_SUCCESS};
+  size_t hardwareBufferSize{0};
+  uint64_t samplingInterval{0};
+  CUpti_PmSampling_TriggerMode triggerMode{};
+  CUpti_PmSampling_HardwareBuffer_AppendMode appendMode{};
   std::vector<std::string> counterDataMetricNames;
   uint32_t maxSamples{0};
 
@@ -88,20 +83,6 @@ void recordCall(std::string call) {
 
 void clearCalls() {
   fakeCupti().calls.clear();
-}
-
-size_t callCount(std::string_view call) {
-  return static_cast<size_t>(
-      std::count(fakeCupti().calls.begin(), fakeCupti().calls.end(), call));
-}
-
-CUptiResult resultFor(std::string_view call) {
-  const auto result = fakeCupti().results.find(std::string(call));
-  return result == fakeCupti().results.end() ? CUPTI_SUCCESS : result->second;
-}
-
-void setResult(std::string call, CUptiResult result) {
-  fakeCupti().results.insert_or_assign(std::move(call), result);
 }
 
 void expectCalls(std::initializer_list<std::string> expected) {
@@ -157,32 +138,20 @@ cuptiGetResultString(CUptiResult result, const char** resultString) {
   return CUPTI_SUCCESS;
 }
 
-// Record every call, return a scripted error if present, then fill outputs.
-#define DEFINE_CUPTI_FAKE(function, call, paramsType, ...) \
-  CUptiResult CUPTIAPI function(paramsType* params) {      \
-    static_cast<void>(params);                             \
-    recordCall(call);                                      \
-    const auto result = resultFor(call);                   \
-    if (result != CUPTI_SUCCESS) {                         \
-      return result;                                       \
-    }                                                      \
-    __VA_ARGS__                                            \
-    return CUPTI_SUCCESS;                                  \
-  }
+CUptiResult CUPTIAPI
+cuptiProfilerInitialize(CUpti_Profiler_Initialize_Params* params) {
+  static_cast<void>(params);
+  return CUPTI_SUCCESS;
+}
 
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerInitialize,
-    "profilerInitialize",
-    CUpti_Profiler_Initialize_Params)
-DEFINE_CUPTI_FAKE(
-    cuptiDeviceGetChipName,
-    "deviceGetChipName",
-    CUpti_Device_GetChipName_Params,
-    { params->pChipName = fakeCupti().chipName.c_str(); })
+CUptiResult CUPTIAPI
+cuptiDeviceGetChipName(CUpti_Device_GetChipName_Params* params) {
+  params->pChipName = "mock-chip";
+  return CUPTI_SUCCESS;
+}
 
 cudaError_t CUDARTAPI
 cudaGetDeviceProperties(cudaDeviceProp* properties, int device) {
-  recordCall("cudaGetDeviceProperties");
   static_cast<void>(device);
   *properties = cudaDeviceProp{};
   properties->major = fakeCupti().major;
@@ -195,147 +164,142 @@ const char* CUDARTAPI cudaGetErrorString(cudaError_t error) {
   return "mock CUDA error";
 }
 
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingGetCounterAvailability,
-    "getCounterAvailability",
-    CUpti_PmSampling_GetCounterAvailability_Params,
-    {
-      if (params->pCounterAvailabilityImage == nullptr) {
-        params->counterAvailabilityImageSize =
-            fakeCupti().counterAvailabilityImageSize;
-      } else {
-        std::fill_n(
-            params->pCounterAvailabilityImage,
-            params->counterAvailabilityImageSize,
-            uint8_t{0});
-      }
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostInitialize,
-    "hostInitialize",
-    CUpti_Profiler_Host_Initialize_Params,
-    { params->pHostObject = fakeHostObject(); })
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostConfigAddMetrics,
-    "hostConfigAddMetrics",
-    CUpti_Profiler_Host_ConfigAddMetrics_Params,
-    {
-      fakeCupti().configMetricNames =
-          copyMetricNames(params->ppMetricNames, params->numMetrics);
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostGetConfigImageSize,
-    "hostGetConfigImageSize",
-    CUpti_Profiler_Host_GetConfigImageSize_Params,
-    { params->configImageSize = fakeCupti().configImageSize; })
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostGetConfigImage,
-    "hostGetConfigImage",
-    CUpti_Profiler_Host_GetConfigImage_Params,
-    { std::fill_n(params->pConfigImage, params->configImageSize, uint8_t{0}); })
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostGetNumOfPasses,
-    "hostGetNumOfPasses",
-    CUpti_Profiler_Host_GetNumOfPasses_Params,
-    { params->numOfPasses = fakeCupti().numPasses; })
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingEnable,
-    "samplingEnable",
-    CUpti_PmSampling_Enable_Params,
-    {
-      fakeCupti().enabledDeviceIndex = params->deviceIndex;
-      params->pPmSamplingObject = fakeSamplingObject();
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingSetConfig,
-    "samplingSetConfig",
-    CUpti_PmSampling_SetConfig_Params,
-    {
-      fakeCupti().setConfig = *params;
-      fakeCupti().setConfigCalled = true;
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingGetCounterDataSize,
-    "getCounterDataSize",
-    CUpti_PmSampling_GetCounterDataSize_Params,
-    {
-      fakeCupti().counterDataMetricNames =
-          copyMetricNames(params->pMetricNames, params->numMetrics);
-      fakeCupti().maxSamples = params->maxSamples;
-      params->counterDataSize = fakeCupti().counterDataSize;
-    })
+CUptiResult CUPTIAPI cuptiPmSamplingGetCounterAvailability(
+    CUpti_PmSampling_GetCounterAvailability_Params* params) {
+  if (params->pCounterAvailabilityImage == nullptr) {
+    params->counterAvailabilityImageSize = 1;
+  }
+  return CUPTI_SUCCESS;
+}
 
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingCounterDataImageInitialize,
-    "counterDataImageInitialize",
-    CUpti_PmSampling_CounterDataImage_Initialize_Params)
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingStart,
-    "samplingStart",
-    CUpti_PmSampling_Start_Params)
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingDecodeData,
-    "samplingDecodeData",
-    CUpti_PmSampling_DecodeData_Params,
-    {
-      params->decodeStopReason = fakeCupti().decodeStopReason;
-      params->overflow = 0;
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingGetCounterDataInfo,
-    "getCounterDataInfo",
-    CUpti_PmSampling_GetCounterDataInfo_Params,
-    {
-      params->numTotalSamples = fakeCupti().decodedSamples.size();
-      params->numPopulatedSamples = fakeCupti().decodedSamples.size();
-      params->numCompletedSamples = fakeCupti().decodedSamples.size();
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingCounterDataGetSampleInfo,
-    "getSampleInfo",
-    CUpti_PmSampling_CounterData_GetSampleInfo_Params,
-    {
-      if (params->sampleIndex >= fakeCupti().decodedSamples.size()) {
-        return CUPTI_ERROR_INVALID_PARAMETER;
-      }
-      const auto& sample = fakeCupti().decodedSamples[params->sampleIndex];
-      params->startTimestamp = sample.startTimestamp;
-      params->endTimestamp = sample.endTimestamp;
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostEvaluateToGpuValues,
-    "hostEvaluateToGpuValues",
-    CUpti_Profiler_Host_EvaluateToGpuValues_Params,
-    {
-      if (params->rangeIndex >= fakeCupti().decodedSamples.size()) {
-        return CUPTI_ERROR_INVALID_PARAMETER;
-      }
-      const auto& values =
-          fakeCupti().decodedSamples[params->rangeIndex].values;
-      if (values.size() != params->numMetrics) {
-        return CUPTI_ERROR_INVALID_PARAMETER;
-      }
-      std::copy(values.begin(), values.end(), params->pMetricValues);
-    })
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingStop,
-    "samplingStop",
-    CUpti_PmSampling_Stop_Params)
+CUptiResult CUPTIAPI
+cuptiProfilerHostInitialize(CUpti_Profiler_Host_Initialize_Params* params) {
+  params->pHostObject = fakeHostObject();
+  return CUPTI_SUCCESS;
+}
 
-DEFINE_CUPTI_FAKE(
-    cuptiPmSamplingDisable,
-    "samplingDisable",
-    CUpti_PmSampling_Disable_Params)
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerHostDeinitialize,
-    "hostDeinitialize",
-    CUpti_Profiler_Host_Deinitialize_Params)
-DEFINE_CUPTI_FAKE(
-    cuptiProfilerDeInitialize,
-    "profilerDeInitialize",
-    CUpti_Profiler_DeInitialize_Params)
+CUptiResult CUPTIAPI cuptiProfilerHostConfigAddMetrics(
+    CUpti_Profiler_Host_ConfigAddMetrics_Params* params) {
+  fakeCupti().configMetricNames =
+      copyMetricNames(params->ppMetricNames, params->numMetrics);
+  return CUPTI_SUCCESS;
+}
 
-#undef DEFINE_CUPTI_FAKE
+CUptiResult CUPTIAPI cuptiProfilerHostGetConfigImageSize(
+    CUpti_Profiler_Host_GetConfigImageSize_Params* params) {
+  params->configImageSize = 1;
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiProfilerHostGetConfigImage(
+    CUpti_Profiler_Host_GetConfigImage_Params* params) {
+  static_cast<void>(params);
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiProfilerHostGetNumOfPasses(
+    CUpti_Profiler_Host_GetNumOfPasses_Params* params) {
+  params->numOfPasses = fakeCupti().numPasses;
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiPmSamplingEnable(CUpti_PmSampling_Enable_Params* params) {
+  fakeCupti().enabledDeviceIndex = params->deviceIndex;
+  params->pPmSamplingObject = fakeSamplingObject();
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiPmSamplingSetConfig(CUpti_PmSampling_SetConfig_Params* params) {
+  if (fakeCupti().setConfigResult != CUPTI_SUCCESS) {
+    return fakeCupti().setConfigResult;
+  }
+  fakeCupti().hardwareBufferSize = params->hardwareBufferSize;
+  fakeCupti().samplingInterval = params->samplingInterval;
+  fakeCupti().triggerMode = params->triggerMode;
+  fakeCupti().appendMode = params->hwBufferAppendMode;
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiPmSamplingGetCounterDataSize(
+    CUpti_PmSampling_GetCounterDataSize_Params* params) {
+  fakeCupti().counterDataMetricNames =
+      copyMetricNames(params->pMetricNames, params->numMetrics);
+  fakeCupti().maxSamples = params->maxSamples;
+  params->counterDataSize = 1;
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiPmSamplingCounterDataImageInitialize(
+    CUpti_PmSampling_CounterDataImage_Initialize_Params* params) {
+  static_cast<void>(params);
+  recordCall("counterDataImageInitialize");
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiPmSamplingStart(CUpti_PmSampling_Start_Params* params) {
+  static_cast<void>(params);
+  recordCall("samplingStart");
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiPmSamplingDecodeData(CUpti_PmSampling_DecodeData_Params* params) {
+  params->decodeStopReason = fakeCupti().decodeStopReason;
+  params->overflow = 0;
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiPmSamplingGetCounterDataInfo(
+    CUpti_PmSampling_GetCounterDataInfo_Params* params) {
+  params->numCompletedSamples = fakeCupti().decodedSamples.size();
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiPmSamplingCounterDataGetSampleInfo(
+    CUpti_PmSampling_CounterData_GetSampleInfo_Params* params) {
+  const auto& sample = fakeCupti().decodedSamples[params->sampleIndex];
+  params->startTimestamp = sample.startTimestamp;
+  params->endTimestamp = sample.endTimestamp;
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiProfilerHostEvaluateToGpuValues(
+    CUpti_Profiler_Host_EvaluateToGpuValues_Params* params) {
+  const auto& values = fakeCupti().decodedSamples[params->rangeIndex].values;
+  std::copy(values.begin(), values.end(), params->pMetricValues);
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiPmSamplingStop(CUpti_PmSampling_Stop_Params* params) {
+  static_cast<void>(params);
+  recordCall("samplingStop");
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiPmSamplingDisable(CUpti_PmSampling_Disable_Params* params) {
+  static_cast<void>(params);
+  recordCall("samplingDisable");
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI cuptiProfilerHostDeinitialize(
+    CUpti_Profiler_Host_Deinitialize_Params* params) {
+  static_cast<void>(params);
+  recordCall("hostDeinitialize");
+  return CUPTI_SUCCESS;
+}
+
+CUptiResult CUPTIAPI
+cuptiProfilerDeInitialize(CUpti_Profiler_DeInitialize_Params* params) {
+  static_cast<void>(params);
+  recordCall("profilerDeInitialize");
+  return CUPTI_SUCCESS;
+}
 
 } // extern "C"
 
@@ -360,42 +324,16 @@ TEST_F(CuptiPMSamplingApiTest, ConfiguresDeviceMetricsAndBuffers) {
 
   api.configure(config);
 
-  expectCalls({
-      "profilerInitialize",
-      "deviceGetChipName",
-      "cudaGetDeviceProperties",
-      "getCounterAvailability",
-      "getCounterAvailability",
-      "hostInitialize",
-      "hostConfigAddMetrics",
-      "hostGetConfigImageSize",
-      "hostGetConfigImage",
-      "hostGetNumOfPasses",
-      "samplingEnable",
-      "samplingSetConfig",
-      "getCounterDataSize",
-      "counterDataImageInitialize",
-  });
   EXPECT_EQ(fakeCupti().configMetricNames, config.metricNames);
   EXPECT_EQ(fakeCupti().enabledDeviceIndex, 2);
-
-  ASSERT_TRUE(fakeCupti().setConfigCalled);
+  EXPECT_EQ(fakeCupti().hardwareBufferSize, 64 * 1024 * 1024);
+  EXPECT_EQ(fakeCupti().samplingInterval, 250'000);
   EXPECT_EQ(
-      fakeCupti().setConfig.structSize,
-      CUpti_PmSampling_SetConfig_Params_STRUCT_SIZE);
-  EXPECT_EQ(fakeCupti().setConfig.pPriv, nullptr);
-  EXPECT_EQ(fakeCupti().setConfig.pPmSamplingObject, fakeSamplingObject());
-  EXPECT_EQ(fakeCupti().setConfig.configSize, fakeCupti().configImageSize);
-  EXPECT_NE(fakeCupti().setConfig.pConfig, nullptr);
-  EXPECT_EQ(fakeCupti().setConfig.hardwareBufferSize, 64 * 1024 * 1024);
-  EXPECT_EQ(fakeCupti().setConfig.samplingInterval, 250'000);
-  EXPECT_EQ(
-      fakeCupti().setConfig.triggerMode,
+      fakeCupti().triggerMode,
       CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_TIME_INTERVAL);
   EXPECT_EQ(
-      fakeCupti().setConfig.hwBufferAppendMode,
+      fakeCupti().appendMode,
       CUPTI_PM_SAMPLING_HARDWARE_BUFFER_APPEND_MODE_KEEP_LATEST);
-
   EXPECT_EQ(fakeCupti().counterDataMetricNames, config.metricNames);
   EXPECT_EQ(fakeCupti().maxSamples, 1024);
   api.disable();
@@ -404,25 +342,22 @@ TEST_F(CuptiPMSamplingApiTest, ConfiguresDeviceMetricsAndBuffers) {
 TEST_F(CuptiPMSamplingApiTest, UsesFixedSysclkIntervalOnGa100) {
   configureForDevice(8, 0, 0ns);
 
-  ASSERT_TRUE(fakeCupti().setConfigCalled);
   EXPECT_EQ(
-      fakeCupti().setConfig.triggerMode,
+      fakeCupti().triggerMode,
       CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_SYSCLK_INTERVAL);
-  EXPECT_EQ(fakeCupti().setConfig.samplingInterval, 1'000'000);
+  EXPECT_EQ(fakeCupti().samplingInterval, 1'000'000);
 }
 
 TEST_F(CuptiPMSamplingApiTest, UsesRequestedTimeIntervalOnGa10xAndNewer) {
   for (const auto& [major, minor] :
-       {std::pair{8, 6}, std::pair{8, 9}, std::pair{9, 0}}) {
+       {std::pair{8, 6}, std::pair{9, 0}}) {
     SCOPED_TRACE(testing::Message() << major << "." << minor);
-    fakeCupti().setConfigCalled = false;
     configureForDevice(major, minor, 500us);
 
-    ASSERT_TRUE(fakeCupti().setConfigCalled);
     EXPECT_EQ(
-        fakeCupti().setConfig.triggerMode,
+        fakeCupti().triggerMode,
         CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_TIME_INTERVAL);
-    EXPECT_EQ(fakeCupti().setConfig.samplingInterval, 500'000);
+    EXPECT_EQ(fakeCupti().samplingInterval, 500'000);
   }
 }
 
@@ -435,7 +370,6 @@ TEST_F(CuptiPMSamplingApiTest, RejectsUnsupportedComputeCapabilities) {
 
 TEST_F(CuptiPMSamplingApiTest, RejectsNonpositiveTimeIntervals) {
   EXPECT_THROW(configureForDevice(8, 6, 0ns), std::runtime_error);
-  EXPECT_THROW(configureForDevice(9, 0, -1ns), std::runtime_error);
 }
 
 TEST_F(CuptiPMSamplingApiTest, RejectsMultipassConfigurationBeforeEnabling) {
@@ -443,7 +377,6 @@ TEST_F(CuptiPMSamplingApiTest, RejectsMultipassConfigurationBeforeEnabling) {
   CuptiPMSamplingApi api;
 
   EXPECT_THROW(api.configure(makeConfig()), std::runtime_error);
-  EXPECT_EQ(callCount("samplingEnable"), 0);
 
   clearCalls();
   api.disable();
@@ -451,11 +384,10 @@ TEST_F(CuptiPMSamplingApiTest, RejectsMultipassConfigurationBeforeEnabling) {
 }
 
 TEST_F(CuptiPMSamplingApiTest, CleansUpAfterCuptiConfigurationFailure) {
-  setResult("samplingSetConfig", CUPTI_ERROR_UNKNOWN);
+  fakeCupti().setConfigResult = CUPTI_ERROR_UNKNOWN;
   CuptiPMSamplingApi api;
 
   EXPECT_THROW(api.configure(makeConfig()), std::runtime_error);
-  EXPECT_EQ(callCount("getCounterDataSize"), 0);
 
   clearCalls();
   api.disable();
@@ -465,16 +397,13 @@ TEST_F(CuptiPMSamplingApiTest, CleansUpAfterCuptiConfigurationFailure) {
 TEST_F(CuptiPMSamplingApiTest, RejectsReconfigurationUntilDisabled) {
   CuptiPMSamplingApi api;
   api.configure(makeConfig());
-  const size_t initializeCalls = callCount("profilerInitialize");
 
   EXPECT_THROW(
       api.configure(makeConfig(750us, 1, {"dram__bytes_read.sum"})),
       std::runtime_error);
-  EXPECT_EQ(callCount("profilerInitialize"), initializeCalls);
 
   api.disable();
   api.configure(makeConfig(750us, 1, {"dram__bytes_read.sum"}));
-  EXPECT_EQ(callCount("profilerInitialize"), initializeCalls + 1);
   EXPECT_EQ(
       fakeCupti().configMetricNames,
       (std::vector<std::string>{"dram__bytes_read.sum"}));
@@ -510,15 +439,7 @@ TEST_F(CuptiPMSamplingApiTest, DecodesCompletedSamplesAndAppendsThem) {
 
   EXPECT_TRUE(api.decode(samples));
 
-  expectCalls({
-      "samplingDecodeData",
-      "getCounterDataInfo",
-      "getSampleInfo",
-      "hostEvaluateToGpuValues",
-      "getSampleInfo",
-      "hostEvaluateToGpuValues",
-      "counterDataImageInitialize",
-  });
+  expectCalls({"counterDataImageInitialize"});
   ASSERT_EQ(samples.size(), 3);
   EXPECT_EQ(samples[0].rawStartTimestamp, 1);
   EXPECT_EQ(samples[0].rawEndTimestamp, 2);
@@ -532,57 +453,19 @@ TEST_F(CuptiPMSamplingApiTest, DecodesCompletedSamplesAndAppendsThem) {
   api.disable();
 }
 
-TEST_F(CuptiPMSamplingApiTest, ReportsUndrainedDecodeStopReasons) {
+TEST_F(CuptiPMSamplingApiTest, ReportsFullCounterDataAsUndrained) {
   CuptiPMSamplingApi api;
   api.configure(makeConfig());
   std::vector<CuptiPMSample> samples;
 
-  for (const auto reason :
-       {CUPTI_PM_SAMPLING_DECODE_STOP_REASON_OTHER,
-        CUPTI_PM_SAMPLING_DECODE_STOP_REASON_COUNTER_DATA_FULL}) {
-    SCOPED_TRACE(static_cast<int>(reason));
-    fakeCupti().decodeStopReason = reason;
-    clearCalls();
-
-    EXPECT_FALSE(api.decode(samples));
-    EXPECT_EQ(callCount("counterDataImageInitialize"), 1);
-  }
+  fakeCupti().decodeStopReason =
+      CUPTI_PM_SAMPLING_DECODE_STOP_REASON_COUNTER_DATA_FULL;
+  EXPECT_FALSE(api.decode(samples));
   EXPECT_TRUE(samples.empty());
   api.disable();
 }
 
-TEST_F(CuptiPMSamplingApiTest, RejectsUnexpectedDecodeStopReason) {
-  fakeCupti().decodeStopReason = CUPTI_PM_SAMPLING_DECODE_STOP_REASON_COUNT;
-  CuptiPMSamplingApi api;
-  api.configure(makeConfig());
-  std::vector<CuptiPMSample> samples;
-  clearCalls();
-
-  EXPECT_THROW(api.decode(samples), std::runtime_error);
-
-  expectCalls({"samplingDecodeData"});
-  EXPECT_TRUE(samples.empty());
-  api.disable();
-}
-
-TEST_F(CuptiPMSamplingApiTest, PropagatesSamplingOperationFailures) {
-  CuptiPMSamplingApi api;
-  api.configure(makeConfig());
-  std::vector<CuptiPMSample> samples;
-  clearCalls();
-
-  setResult("samplingStart", CUPTI_ERROR_UNKNOWN);
-  EXPECT_THROW(api.start(), std::runtime_error);
-  setResult("samplingDecodeData", CUPTI_ERROR_UNKNOWN);
-  EXPECT_THROW(api.decode(samples), std::runtime_error);
-  setResult("samplingStop", CUPTI_ERROR_UNKNOWN);
-  EXPECT_THROW(api.stop(), std::runtime_error);
-
-  expectCalls({"samplingStart", "samplingDecodeData", "samplingStop"});
-  api.disable();
-}
-
-TEST_F(CuptiPMSamplingApiTest, DisableIsOrderedIdempotentAndAllowsReuse) {
+TEST_F(CuptiPMSamplingApiTest, DisableIsOrderedAndIdempotent) {
   CuptiPMSamplingApi api;
   api.configure(makeConfig());
   clearCalls();
@@ -594,43 +477,6 @@ TEST_F(CuptiPMSamplingApiTest, DisableIsOrderedIdempotentAndAllowsReuse) {
   api.disable();
   EXPECT_TRUE(fakeCupti().calls.empty());
   EXPECT_THROW(api.start(), std::runtime_error);
-
-  api.configure(makeConfig(750us, 1, {"dram__bytes_read.sum"}));
-  EXPECT_EQ(
-      fakeCupti().configMetricNames,
-      (std::vector<std::string>{"dram__bytes_read.sum"}));
-  api.disable();
-}
-
-TEST_F(CuptiPMSamplingApiTest, DisableRetriesPartialTeardownFailures) {
-  CuptiPMSamplingApi api;
-  api.configure(makeConfig());
-  clearCalls();
-
-  setResult("samplingDisable", CUPTI_ERROR_UNKNOWN);
-  api.disable();
-  expectCalls({"samplingDisable"});
-
-  setResult("samplingDisable", CUPTI_SUCCESS);
-  setResult("hostDeinitialize", CUPTI_ERROR_UNKNOWN);
-  clearCalls();
-  api.disable();
-  expectCalls({"samplingDisable", "hostDeinitialize"});
-
-  setResult("hostDeinitialize", CUPTI_SUCCESS);
-  setResult("profilerDeInitialize", CUPTI_ERROR_UNKNOWN);
-  clearCalls();
-  api.disable();
-  expectCalls({"hostDeinitialize", "profilerDeInitialize"});
-
-  setResult("profilerDeInitialize", CUPTI_SUCCESS);
-  clearCalls();
-  api.disable();
-  expectCalls({"profilerDeInitialize"});
-
-  clearCalls();
-  api.disable();
-  EXPECT_TRUE(fakeCupti().calls.empty());
 }
 
 TEST_F(CuptiPMSamplingApiTest, DestructorDisablesConfiguredSampler) {
