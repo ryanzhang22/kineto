@@ -133,7 +133,6 @@ target_include_directories(CuptiActivityProfilerTest PRIVATE
     "${CUDA_SOURCE_DIR}/include"
     "${CUPTI_INCLUDE_DIR}")
 gtest_discover_tests(CuptiActivityProfilerTest)
-
 # CuptiCallbackApiTest
 add_executable(CuptiCallbackApiTest CuptiCallbackApiTest.cpp)
 target_link_libraries(CuptiCallbackApiTest PRIVATE
