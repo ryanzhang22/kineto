@@ -199,3 +199,32 @@ TEST(CuptiPMSamplingSessionTest, BuildsHardwareCounterActivities) {
   EXPECT_EQ(buffer->activities.size(), 2);
   EXPECT_EQ(session.getTraceBuffer().get(), nullptr);
 }
+
+TEST(CuptiPMSamplingSessionTest, TrimsSamplesToTraceWindow) {
+  configureCuptiTimestampSource(false);
+  auto controller = std::make_unique<FakeCuptiPMSamplingController>(
+      0,
+      std::vector<std::string>{"sm__cycles_active.avg"},
+      std::vector<CuptiPMSample>{
+          CuptiPMSample{90, 110, {1.0}},
+          CuptiPMSample{120, 130, {2.0}},
+          CuptiPMSample{140, 160, {3.0}},
+      });
+  CuptiPMSamplingSession session(std::move(controller));
+  session.stop();
+
+  Config config;
+  MemoryTraceLogger logger(config);
+  session.processTrace(logger, {}, 100, 150);
+
+  const auto* loggedActivities = logger.traceActivities();
+  ASSERT_EQ(loggedActivities->size(), 1);
+  EXPECT_EQ(loggedActivities->at(0)->timestamp(), 120);
+  EXPECT_EQ(loggedActivities->at(0)->duration(), 10);
+
+  auto buffer = session.getTraceBuffer();
+  ASSERT_NE(buffer, nullptr);
+  EXPECT_EQ(buffer->span.startTime, 120);
+  EXPECT_EQ(buffer->span.endTime, 130);
+  EXPECT_EQ(buffer->activities.size(), 1);
+}

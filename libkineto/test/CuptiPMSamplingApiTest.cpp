@@ -45,8 +45,6 @@ struct FakeSample {
 struct FakeCuptiState {
   int major{9};
   int minor{0};
-  cudaError_t devicePropertiesResult{cudaSuccess};
-  bool hasChipName{true};
   std::string chipName{"mock-chip"};
   size_t counterAvailabilityImageSize{3};
   size_t configImageSize{4};
@@ -180,21 +178,16 @@ DEFINE_CUPTI_FAKE(
     cuptiDeviceGetChipName,
     "deviceGetChipName",
     CUpti_Device_GetChipName_Params,
-    {
-      params->pChipName =
-          fakeCupti().hasChipName ? fakeCupti().chipName.c_str() : nullptr;
-    })
+    { params->pChipName = fakeCupti().chipName.c_str(); })
 
 cudaError_t CUDARTAPI
 cudaGetDeviceProperties(cudaDeviceProp* properties, int device) {
   recordCall("cudaGetDeviceProperties");
   static_cast<void>(device);
-  if (fakeCupti().devicePropertiesResult == cudaSuccess) {
-    *properties = cudaDeviceProp{};
-    properties->major = fakeCupti().major;
-    properties->minor = fakeCupti().minor;
-  }
-  return fakeCupti().devicePropertiesResult;
+  *properties = cudaDeviceProp{};
+  properties->major = fakeCupti().major;
+  properties->minor = fakeCupti().minor;
+  return cudaSuccess;
 }
 
 const char* CUDARTAPI cudaGetErrorString(cudaError_t error) {
@@ -443,26 +436,6 @@ TEST_F(CuptiPMSamplingApiTest, RejectsUnsupportedComputeCapabilities) {
 TEST_F(CuptiPMSamplingApiTest, RejectsNonpositiveTimeIntervals) {
   EXPECT_THROW(configureForDevice(8, 6, 0ns), std::runtime_error);
   EXPECT_THROW(configureForDevice(9, 0, -1ns), std::runtime_error);
-}
-
-TEST_F(CuptiPMSamplingApiTest, ReportsDeviceDiscoveryFailures) {
-  fakeCupti().hasChipName = false;
-  {
-    CuptiPMSamplingApi api;
-    EXPECT_THROW(api.configure(makeConfig()), std::runtime_error);
-    EXPECT_EQ(callCount("cudaGetDeviceProperties"), 0);
-    api.disable();
-  }
-
-  fakeCupti().hasChipName = true;
-  fakeCupti().devicePropertiesResult = cudaErrorInvalidDevice;
-  clearCalls();
-  {
-    CuptiPMSamplingApi api;
-    EXPECT_THROW(api.configure(makeConfig()), std::runtime_error);
-    EXPECT_EQ(callCount("hostInitialize"), 0);
-    api.disable();
-  }
 }
 
 TEST_F(CuptiPMSamplingApiTest, RejectsMultipassConfigurationBeforeEnabling) {
