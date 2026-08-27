@@ -145,23 +145,17 @@ const std::set<libkineto::ActivityType>& CuptiPMSamplingProfiler::
 
 std::unique_ptr<libkineto::IActivityProfilerSession> CuptiPMSamplingProfiler::
     configure(
-        const std::set<libkineto::ActivityType>& activityTypes,
+        const std::set<libkineto::ActivityType>& /*activityTypes*/,
         const libkineto::Config& config) {
-  if (activityTypes.find(libkineto::ActivityType::HARDWARE_COUNTERS) ==
-      activityTypes.end()) {
-    return nullptr;
-  }
-
-  // Translate from the Kineto config into the sampling-specific config
-  const auto& metricNames = config.cuptiPMSamplingMetricNames();
+  const auto& metricNames = config.performanceMetricNames();
   if (metricNames.empty()) {
     return nullptr;
   }
 
-  const auto deviceId = config.cuptiPMSamplingDeviceId();
+  const auto deviceId = config.performanceMetricsDeviceId();
   if (deviceId < 0) {
     LOG(WARNING) << "CUPTI PM sampling requires a nonnegative "
-                    "CUPTI_PM_SAMPLING_DEVICE_ID";
+                    "PERFORMANCE_METRICS_DEVICE_ID";
     return nullptr;
   }
 

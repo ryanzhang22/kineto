@@ -228,13 +228,12 @@ class Config : public AbstractConfig {
     return cuptiDeviceBufferPoolLimit_;
   }
 
-  [[nodiscard]] const std::vector<std::string>& cuptiPMSamplingMetricNames()
-      const {
-    return cuptiPMSamplingMetricNames_;
+  [[nodiscard]] const std::vector<std::string>& performanceMetricNames() const {
+    return performanceMetricNames_;
   }
 
-  [[nodiscard]] int32_t cuptiPMSamplingDeviceId() const {
-    return cuptiPMSamplingDeviceId_;
+  [[nodiscard]] int32_t performanceMetricsDeviceId() const {
+    return performanceMetricsDeviceId_;
   }
 
   [[nodiscard]] bool memoryProfilerEnabled() const {
@@ -373,9 +372,9 @@ class Config : public AbstractConfig {
   size_t cuptiDeviceBufferSize_;
   size_t cuptiDeviceBufferPoolLimit_;
 
-  // CUPTI PM Sampling
-  std::vector<std::string> cuptiPMSamplingMetricNames_;
-  int32_t cuptiPMSamplingDeviceId_{-1};
+  // Performance metrics
+  std::vector<std::string> performanceMetricNames_;
+  int32_t performanceMetricsDeviceId_{-1};
 
   // CUPTI Timestamp Format
   bool useTSCTimestamp_{true};

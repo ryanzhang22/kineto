@@ -139,6 +139,27 @@ TEST(ParseTest, ActivityTypes) {
            ActivityType::PRIVATEUSE1_DRIVER}));
 }
 
+TEST(ParseTest, PerformanceMetrics) {
+  Config cfg;
+  EXPECT_TRUE(cfg.performanceMetricNames().empty());
+  EXPECT_EQ(cfg.performanceMetricsDeviceId(), -1);
+
+  EXPECT_TRUE(
+      cfg.parse("PERFORMANCE_METRICS_DEVICE_ID=2\n"
+                "PERFORMANCE_METRICS="
+                "sm__cycles_active.avg,dram__bytes_read.sum"));
+
+  EXPECT_EQ(
+      cfg.performanceMetricNames(),
+      std::vector<std::string>(
+          {"sm__cycles_active.avg", "dram__bytes_read.sum"}));
+  EXPECT_EQ(cfg.performanceMetricsDeviceId(), 2);
+
+  auto clone = cfg.clone();
+  EXPECT_EQ(clone->performanceMetricNames(), cfg.performanceMetricNames());
+  EXPECT_EQ(clone->performanceMetricsDeviceId(), 2);
+}
+
 TEST(ParseTest, ProfileStartTime) {
   Config cfg;
   system_clock::time_point now = system_clock::now();
