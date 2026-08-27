@@ -273,8 +273,7 @@ CUptiResult CUPTIAPI cuptiProfilerHostEvaluateToGpuValues(
   return CUPTI_SUCCESS;
 }
 
-CUptiResult CUPTIAPI
-cuptiPmSamplingStop(CUpti_PmSampling_Stop_Params* params) {
+CUptiResult CUPTIAPI cuptiPmSamplingStop(CUpti_PmSampling_Stop_Params* params) {
   static_cast<void>(params);
   recordCall("samplingStop");
   return CUPTI_SUCCESS;
@@ -287,8 +286,8 @@ cuptiPmSamplingDisable(CUpti_PmSampling_Disable_Params* params) {
   return CUPTI_SUCCESS;
 }
 
-CUptiResult CUPTIAPI cuptiProfilerHostDeinitialize(
-    CUpti_Profiler_Host_Deinitialize_Params* params) {
+CUptiResult CUPTIAPI
+cuptiProfilerHostDeinitialize(CUpti_Profiler_Host_Deinitialize_Params* params) {
   static_cast<void>(params);
   recordCall("hostDeinitialize");
   return CUPTI_SUCCESS;
@@ -349,8 +348,7 @@ TEST_F(CuptiPMSamplingApiTest, UsesFixedSysclkIntervalOnGa100) {
 }
 
 TEST_F(CuptiPMSamplingApiTest, UsesRequestedTimeIntervalOnGa10xAndNewer) {
-  for (const auto& [major, minor] :
-       {std::pair{8, 6}, std::pair{9, 0}}) {
+  for (const auto& [major, minor] : {std::pair{8, 6}, std::pair{9, 0}}) {
     SCOPED_TRACE(testing::Message() << major << "." << minor);
     configureForDevice(major, minor, 500us);
 
