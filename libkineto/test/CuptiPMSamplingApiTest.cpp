@@ -452,6 +452,9 @@ TEST_F(CuptiPMSamplingApiTest, DecodesCompletedSamplesAndAppendsThem) {
 }
 
 TEST_F(CuptiPMSamplingApiTest, ReportsFullCounterDataAsUndrained) {
+  fakeCupti().decodedSamples = {
+      FakeSample{100, 120, {1.25}},
+  };
   CuptiPMSamplingApi api;
   api.configure(makeConfig());
   std::vector<CuptiPMSample> samples;
@@ -459,7 +462,10 @@ TEST_F(CuptiPMSamplingApiTest, ReportsFullCounterDataAsUndrained) {
   fakeCupti().decodeStopReason =
       CUPTI_PM_SAMPLING_DECODE_STOP_REASON_COUNTER_DATA_FULL;
   EXPECT_FALSE(api.decode(samples));
-  EXPECT_TRUE(samples.empty());
+  ASSERT_EQ(samples.size(), 1);
+  EXPECT_EQ(samples[0].rawStartTimestamp, 100);
+  EXPECT_EQ(samples[0].rawEndTimestamp, 120);
+  EXPECT_EQ(samples[0].values, (std::vector<double>{1.25}));
   api.disable();
 }
 
