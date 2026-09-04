@@ -115,7 +115,9 @@ static bool nextActivityRecord(
 }
 
 void CuptiActivityApi::setMaxBufferSize(int64_t size) {
-  maxGpuBufferCount_ = 1 + size / kBufSize;
+  const auto bufferSize = static_cast<int64_t>(kBufSize);
+  maxGpuBufferCount_ =
+      size <= 0 ? 1 : size / bufferSize + (size % bufferSize != 0);
 }
 
 void CuptiActivityApi::setDeviceBufferSize(size_t size) {
@@ -154,12 +156,12 @@ void CuptiActivityApi::bufferRequested(
   std::lock_guard<std::mutex> guard(mutex_);
   LOG(VERBOSE) << "CUPTI buffer requested";
 
+  const auto gpuBufferCount = allocatedGpuTraceBuffers_.size() +
+      (readyGpuTraceBuffers_ ? readyGpuTraceBuffers_->size() : 0);
   if (!stopCollection &&
-      static_cast<int64_t>(allocatedGpuTraceBuffers_.size()) >=
-          maxGpuBufferCount_) {
+      static_cast<int64_t>(gpuBufferCount) >= maxGpuBufferCount_) {
     stopCollection = true;
-    LOG(WARNING) << "Exceeded max GPU buffer count ("
-                 << allocatedGpuTraceBuffers_.size()
+    LOG(WARNING) << "Exceeded max GPU buffer count (" << gpuBufferCount
                  << " >= " << maxGpuBufferCount_ << ") - terminating tracing";
   }
   // Rejecting buffers can crash CUPTI before API v27 (CUDA 12.9), so older or

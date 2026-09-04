@@ -316,6 +316,8 @@ class CallbackCuptiActivityApi : public CuptiActivityApi {
   }
 };
 
+constexpr int64_t kCuptiActivityBufferSize = 4 * 1024 * 1024;
+
 // Mock parts of the CuptiActivityApi
 class MockCuptiActivities : public CuptiActivityApi {
  public:
@@ -389,6 +391,52 @@ TEST(CuptiActivityApiTest, RejectsBuffersWhenSupported) {
   auto [thirdBuffer, thirdSize] = cupti.requestBuffer(firstBuffer, firstSize);
   EXPECT_EQ(thirdBuffer, nullptr);
   EXPECT_EQ(thirdSize, 0);
+  EXPECT_NE(cupti.activityBuffers(), nullptr);
+}
+
+TEST(CuptiActivityApiTest, CountsAllocatedAndCompletedBuffersTowardLimit) {
+  CallbackCuptiActivityApi cupti;
+  cupti.canRejectBuffer_ = true;
+  cupti.setMaxBufferSize(kCuptiActivityBufferSize + 1);
+
+  auto [firstBuffer, firstSize] = cupti.requestBuffer();
+  ASSERT_NE(firstBuffer, nullptr);
+  ASSERT_GT(firstSize, 0);
+  cupti.completeBuffer(firstBuffer, firstSize);
+  ASSERT_FALSE(cupti.stopCollection);
+
+  auto [secondBuffer, secondSize] = cupti.requestBuffer(firstBuffer, firstSize);
+  ASSERT_NE(secondBuffer, nullptr);
+  ASSERT_GT(secondSize, 0);
+  ASSERT_FALSE(cupti.stopCollection);
+
+  auto [thirdBuffer, thirdSize] = cupti.requestBuffer(secondBuffer, secondSize);
+  EXPECT_TRUE(cupti.stopCollection);
+  ASSERT_EQ(thirdBuffer, nullptr);
+  EXPECT_EQ(thirdSize, 0);
+
+  cupti.completeBuffer(secondBuffer, secondSize);
+  auto buffers = cupti.activityBuffers();
+  ASSERT_NE(buffers, nullptr);
+  EXPECT_EQ(buffers->size(), 2);
+}
+
+TEST(CuptiActivityApiTest, ExactBufferSizeLimitDoesNotAllowExtraBuffer) {
+  CallbackCuptiActivityApi cupti;
+  cupti.canRejectBuffer_ = true;
+  cupti.setMaxBufferSize(kCuptiActivityBufferSize);
+
+  auto [firstBuffer, firstSize] = cupti.requestBuffer();
+  ASSERT_NE(firstBuffer, nullptr);
+  ASSERT_GT(firstSize, 0);
+  EXPECT_FALSE(cupti.stopCollection);
+
+  auto [secondBuffer, secondSize] = cupti.requestBuffer(firstBuffer, firstSize);
+  EXPECT_TRUE(cupti.stopCollection);
+  ASSERT_EQ(secondBuffer, nullptr);
+  EXPECT_EQ(secondSize, 0);
+
+  cupti.completeBuffer(firstBuffer, firstSize);
   EXPECT_NE(cupti.activityBuffers(), nullptr);
 }
 
