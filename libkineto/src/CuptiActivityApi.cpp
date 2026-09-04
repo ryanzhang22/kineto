@@ -157,6 +157,8 @@ void CuptiActivityApi::bufferRequested(
   std::lock_guard<std::mutex> guard(mutex_);
   LOG(VERBOSE) << "CUPTI buffer requested";
 
+  // Completing a buffer moves it to readyGpuTraceBuffers_ without freeing its
+  // memory. Count both maps so each completion does not open another slot.
   const int64_t gpuBufferCount = allocatedGpuTraceBuffers_.size() +
       (readyGpuTraceBuffers_ ? readyGpuTraceBuffers_->size() : 0);
   if (!stopCollection && gpuBufferCount >= maxGpuBufferCount_) {
